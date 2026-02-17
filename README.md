@@ -77,6 +77,9 @@ In  addition it will generate the specified metrics for each test step (JMeter s
 
 
 Dimensions used for those metrics:
+* `transaction`: the JMeter sampler name (transaction key)
+* `SampleLabel`: the JMeter sample label (same as transaction; aligns with ElasticSearch backend listener field naming)
+* `URL`: the request URL from the JMeter sample (e.g. HTTP request URL; last seen per sample label when aggregated)
 * `transactionDimensions`: a comma-separated list of key=value pairs which will be used as dimensions for the test step related metrics. e.g. `dimension3=Test3,dimension4=Test4`
 
 # Monitoring the metrics in Dynatrace

@@ -35,6 +35,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -52,6 +53,8 @@ public class MintBackendListener extends AbstractBackendListenerClient implement
 	private MintMetricSender mintMetricSender;
 	private Map<String, String> testDimensions = new HashMap<>();
 	private Map<String, String> transactionDimensions = new HashMap<>();
+	/** Last URL seen per sample label (for reporting URL dimension; one per label when aggregated). */
+	private final Map<String, String> sampleLabelToUrl = new ConcurrentHashMap<>();
 	private boolean enabled;
 	private String listenerName;
 	private String sendSamplersByRegex;
@@ -164,11 +167,18 @@ public class MintBackendListener extends AbstractBackendListenerClient implement
 		for (SampleResult sampleResult : sampleResults) {
 			userMetrics.add(sampleResult);
 
-			SamplerMetric samplerMetric = this.getSamplerMetric(sampleResult.getSampleLabel());
+			String label = sampleResult.getSampleLabel();
+			SamplerMetric samplerMetric = this.getSamplerMetric(label);
 			samplerMetric.add(sampleResult);
 
-			final SamplerMetric cumulatedMetrics = this.getSamplerMetric(sampleResult.getSampleLabel());
+			final SamplerMetric cumulatedMetrics = this.getSamplerMetric(label);
 			cumulatedMetrics.add(sampleResult);
+
+			// Track URL for this sample label (last seen per label for dimension reporting)
+			String url = getUrlFromSampleResult(sampleResult);
+			if (url != null && !url.isEmpty()) {
+				sampleLabelToUrl.put(label, url);
+			}
 		}
 
 		log.debug("{}: handleSampleResults: UserMetrics(startedThreads={}, finishedThreads={})",
@@ -261,12 +271,41 @@ public class MintBackendListener extends AbstractBackendListenerClient implement
 
 	private void addTransactionDimensions(String transaction, MintMetricsLine metricsLine) {
 		metricsLine.addDimension(new MintDimension("transaction", SchemalessMetricSanitizer.sanitizeDimensionValue(transaction)));
+		// Explicit SampleLabel dimension (aligns with ElasticSearch backend listener field naming)
+		metricsLine.addDimension(new MintDimension("SampleLabel", SchemalessMetricSanitizer.sanitizeDimensionValue(transaction)));
+		// URL dimension from JMeter sample (last URL seen for this sample label)
+		String url = sampleLabelToUrl.get(transaction);
+		if (url != null && !url.isEmpty()) {
+			metricsLine.addDimension(new MintDimension("URL", SchemalessMetricSanitizer.sanitizeDimensionValue(url)));
+		}
 		transactionDimensions.forEach((key, value) -> {
 			if (!key.trim().isEmpty() && !value.trim().isEmpty())
 				metricsLine.addDimension(
 						new MintDimension(SchemalessMetricSanitizer.sanitizeDimensionIdentifier(key),
 								SchemalessMetricSanitizer.sanitizeDimensionValue(value)));
 		});
+	}
+
+	/**
+	 * Extracts URL from a JMeter sample result (e.g. HTTP request URL).
+	 * Returns null or empty string for non-URL samples.
+	 */
+	private static String getUrlFromSampleResult(SampleResult sampleResult) {
+		if (sampleResult == null) {
+			return null;
+		}
+		try {
+			String url = sampleResult.getUrlAsString();
+			return url != null ? url : "";
+		} catch (Exception e) {
+			// getUrlAsString may not exist on all JMeter versions; fallback to getURL()
+			try {
+				java.net.URL u = sampleResult.getURL();
+				return u != null ? u.toExternalForm() : "";
+			} catch (Exception ignored) {
+				return "";
+			}
+		}
 	}
 
 	private void addTestDimensions(MintMetricsLine metricsLine) {
